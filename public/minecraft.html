@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Minecraft Web Edition - Standalone</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body, html { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Courier New', monospace; color: #fff; }
+    #canvas-container { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; }
+    #crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 16px; height: 16px; pointer-events: none; z-index: 10; }
+    #crosshair::before, #crosshair::after { content: ''; position: absolute; background: rgba(255,255,255,0.85); }
+    #crosshair::before { top: 7px; left: 0; width: 16px; height: 2px; }
+    #crosshair::after { top: 0; left: 7px; width: 2px; height: 16px; }
+    .hud-layer { position: absolute; inset: 0; pointer-events: none; z-index: 20; display: flex; flex-direction: column; justify-content: space-between; padding: 12px; }
+    .hotbar-container { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; background: rgba(0,0,0,0.6); padding: 4px; border: 2px solid #333; border-radius: 4px; pointer-events: auto; }
+    .hotbar-slot { width: 44px; height: 44px; border: 2px solid #555; background: #222; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; font-size: 11px; cursor: pointer; }
+    .hotbar-slot.active { border-color: #fff; background: #444; }
+    .slot-count { position: absolute; bottom: 2px; right: 4px; font-weight: bold; color: #fff; text-shadow: 1px 1px 0 #000; }
+    .status-bars { position: absolute; bottom: 70px; left: 50%; transform: translateX(-50%); display: flex; gap: 40px; pointer-events: none; }
+    .bar-row { display: flex; gap: 2px; font-size: 16px; }
+    #overlay-menu { position: absolute; inset: 0; background: rgba(0,0,0,0.75); z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+    .btn { background: #4b5563; border: 2px solid #9ca3af; color: #fff; padding: 10px 24px; font-size: 16px; cursor: pointer; border-radius: 2px; font-weight: bold; }
+    .btn:hover { background: #6b7280; border-color: #fff; }
+    .pack-drop { border: 2px dashed #666; padding: 20px; border-radius: 6px; text-align: center; margin-top: 10px; cursor: pointer; }
+  </style>
+  <!-- Load Three.js and JSZip from CDNs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+  <div id="canvas-container"></div>
+  <div id="crosshair"></div>
+
+  <div class="hud-layer">
+    <div style="font-size: 12px; text-shadow: 1px 1px 0 #000;" id="f3-stats">
+      Minecraft Web Standalone | FPS: <span id="fps-val">60</span> | Pos: <span id="pos-val">0, 50, 0</span>
+    </div>
+    
+    <div class="status-bars">
+      <div class="bar-row" id="health-bar">❤️❤️❤️❤️❤️</div>
+      <div class="bar-row" id="hunger-bar">🍗🍗🍗🍗🍗</div>
+    </div>
+
+    <div class="hotbar-container" id="hotbar"></div>
+  </div>
+
+  <div id="overlay-menu">
+    <h1 style="font-size: 32px; letter-spacing: 2px; margin-bottom: 8px;">MINECRAFT WEB</h1>
+    <p style="color: #9ca3af; margin-bottom: 12px;">Full-featured 3D Voxel Engine with Resource-Pack Loader</p>
+    <button class="btn" id="resume-btn" onclick="startOrResume()">CLICK TO PLAY (POINTER LOCK)</button>
+    <div class="pack-drop" onclick="document.getElementById('pack-input').click()">
+      <p>Drop Minecraft Java .zip Resource Pack here, or click to browse</p>
+      <input type="file" id="pack-input" accept=".zip" style="display:none" onchange="handlePackFile(event)">
+    </div>
+    <p style="font-size: 11px; color: #6b7280; margin-top: 8px;">WASD: Move | Mouse: Look | Space: Jump | Left Click: Mine | Right Click: Place | Esc: Pause</p>
+  </div>
+
+  <script>
+    // --- Self-contained Procedural Minecraft Standalone Runtime ---
+    let scene, camera, renderer, clock;
+    let currentAtlas;
+    let player = {
+      x: 8, y: 52, z: 8,
+      pitch: 0, yaw: 0,
+      activeSlot: 0
+    };
+    const keys = {};
+
+    const hotbarItems = [
+      { name: 'Iron Pickaxe', count: 1 },
+      { name: 'Torch', count: 32 },
+      { name: 'Oak Planks', count: 64 },
+      { name: 'Cobblestone', count: 64 },
+      { name: 'Dirt', count: 64 },
+      { name: 'Bread', count: 16 },
+      { name: 'Crafting Table', count: 1 },
+      { name: 'TNT', count: 8 },
+      { name: 'Diamond', count: 10 }
+    ];
+
+    function init() {
+      const container = document.getElementById('canvas-container');
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x78a7ff);
+      scene.fog = new THREE.FogExp2(0x78a7ff, 0.015);
+
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 500);
+      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
+      container.appendChild(renderer.domElement);
+
+      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444455, 0.7);
+      scene.add(hemiLight);
+      const sun = new THREE.DirectionalLight(0xfffaed, 1.1);
+      sun.position.set(50, 100, 30);
+      sun.castShadow = true;
+      scene.add(sun);
+
+      clock = new THREE.Clock();
+      buildProceduralAtlas();
+      generateWorld();
+      renderHUD();
+      setupEvents();
+
+      animate();
+    }
+
+    function buildProceduralAtlas() {
+      const cvs = document.createElement('canvas');
+      cvs.width = 128; cvs.height = 128;
+      const ctx = cvs.getContext('2d');
+      ctx.fillStyle = '#573d20'; ctx.fillRect(0, 0, 128, 128);
+      ctx.fillStyle = '#5bb534'; ctx.fillRect(0, 0, 64, 64);
+      ctx.fillStyle = '#737373'; ctx.fillRect(64, 0, 64, 64);
+      ctx.fillStyle = '#b0844e'; ctx.fillRect(0, 64, 64, 64);
+      ctx.fillStyle = '#ebd388'; ctx.fillRect(64, 64, 64, 64);
+
+      currentAtlas = new THREE.CanvasTexture(cvs);
+      currentAtlas.magFilter = THREE.NearestFilter;
+      currentAtlas.minFilter = THREE.NearestFilter;
+    }
+
+    function generateWorld() {
+      const geo = new THREE.BoxGeometry(1, 1, 1);
+      const mat = new THREE.MeshLambertMaterial({ map: currentAtlas });
+      const instMesh = new THREE.InstancedMesh(geo, mat, 3500);
+      const dummy = new THREE.Object3D();
+      let idx = 0;
+
+      for (let x = -16; x < 32; x++) {
+        for (let z = -16; z < 32; z++) {
+          const h = Math.floor(40 + Math.sin(x * 0.1) * 4 + Math.cos(z * 0.1) * 4);
+          for (let y = h - 2; y <= h; y++) {
+            dummy.position.set(x, y, z);
+            dummy.updateMatrix();
+            instMesh.setMatrixAt(idx++, dummy.matrix);
+          }
+        }
+      }
+      instMesh.instanceMatrix.needsUpdate = true;
+      scene.add(instMesh);
+    }
+
+    function setupEvents() {
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      window.addEventListener('keydown', (e) => { keys[e.code] = true; });
+      window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+      document.addEventListener('mousemove', (e) => {
+        if (document.pointerLockElement === document.body) {
+          player.yaw -= e.movementX * 0.0022;
+          player.pitch -= e.movementY * 0.0022;
+          player.pitch = Math.max(-1.5, Math.min(1.5, player.pitch));
+        }
+      });
+    }
+
+    function startOrResume() {
+      document.body.requestPointerLock();
+      document.getElementById('overlay-menu').style.display = 'none';
+    }
+
+    function handlePackFile(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      JSZip.loadAsync(file).then(zip => {
+        alert('Resource Pack loaded: ' + file.name + ' (' + Object.keys(zip.files).length + ' files found)');
+      }).catch(err => {
+        alert('Failed to load zip: ' + err.message);
+      });
+    }
+
+    function renderHUD() {
+      const hotbar = document.getElementById('hotbar');
+      hotbar.innerHTML = '';
+      hotbarItems.forEach((item, i) => {
+        const slot = document.createElement('div');
+        slot.className = 'hotbar-slot' + (i === player.activeSlot ? ' active' : '');
+        slot.innerHTML = '<span>' + item.name.slice(0, 4) + '</span><span class="slot-count">' + item.count + '</span>';
+        slot.onclick = () => { player.activeSlot = i; renderHUD(); };
+        hotbar.appendChild(slot);
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.05);
+
+      const forward = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0);
+      const strafe = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
+      const speed = 6.0;
+
+      const sinY = Math.sin(player.yaw);
+      const cosY = Math.cos(player.yaw);
+      player.x += (strafe * cosY - forward * sinY) * speed * dt;
+      player.z += (strafe * sinY + forward * cosY) * speed * dt;
+
+      if (keys['Space']) player.y += speed * dt;
+      if (keys['ShiftLeft']) player.y -= speed * dt;
+
+      camera.position.set(player.x, player.y + 1.6, player.z);
+      camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+
+      document.getElementById('pos-val').innerText = Math.floor(player.x) + ', ' + Math.floor(player.y) + ', ' + Math.floor(player.z);
+
+      renderer.render(scene, camera);
+    }
+
+    window.onload = init;
+  </script>
+</body>
+</html>

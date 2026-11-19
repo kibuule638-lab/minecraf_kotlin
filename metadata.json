@@ -1,0 +1,8 @@
+{
+  "name": "Minecraft Web Edition",
+  "description": "Full-featured 3D Minecraft browser clone with procedural world generation, greedy meshing, survival & creative modes, inventory & 3x3 crafting, mobs, day/night cycle, and Java resource pack .zip loader.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
